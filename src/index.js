@@ -74,8 +74,8 @@ export default {
       return new Response(JSON.stringify({
         status: 'healthy',
         service: 'inboxforge-mcp',
-        version: '1.0.0',
-        tools_available: 5,
+        version: '1.1.0',
+        tools_available: 6,
         pricing: PRO_TIERS
       }), {
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
@@ -121,7 +121,7 @@ async function handleMcpRequest(request, env) {
         capabilities: { tools: {} },
         serverInfo: {
           name: 'inboxforge-mcp',
-          version: '1.0.0',
+          version: '1.1.0',
           description: 'Autonomous Email Deliverability Engineering: Deliverability Diagnosis, SPF/DKIM/DMARC Authentication Stacks, Inbox Warmup Protocols, Spam Trigger Elimination & Compliant Sending Infrastructure MCP'
         }
       }
@@ -302,6 +302,37 @@ async function handleMcpRequest(request, env) {
               required: ['status', 'domain_architecture', 'mailbox_fleet', 'esp_selection', 'compliance_layer', 'scaling_playbook']
             },
             annotations: { title: 'Compliant Sending Infrastructure Architect', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+          },
+          {
+            name: 'audit_domain_live',
+            description: 'LIVE DNS authentication audit via DNS-over-HTTPS (Google Public DNS). Give it a domain and it queries the REAL current DNS records in real time: the SPF record (existence, lookup-count risk, qualifier strictness), the DMARC record (policy level, reporting, coverage), MX records, and optionally a DKIM selector check. Returns a prioritized fix list computed from what is actually published right now \u2014 not from memory or guesswork.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                domain: {
+                  type: 'string',
+                  description: 'The sending domain to audit (e.g. "example.com" \u2014 no protocol, no www unless mail is actually sent from the www subdomain).'
+                },
+                dkim_selector: {
+                  type: 'string',
+                  description: 'Optional DKIM selector to verify (e.g. "google", "s1", "k1"). If provided, the record at <selector>._domainkey.<domain> is fetched and the key strength estimated.'
+                }
+              },
+              required: ['domain']
+            },
+            annotations: { title: 'Live Domain DNS Auditor', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+            outputSchema: {
+              type: 'object',
+              properties: {
+                status: { type: 'string' },
+                spf_audit: { type: 'string' },
+                dmarc_audit: { type: 'string' },
+                dkim_mx_audit: { type: 'string' },
+                fix_priorities: { type: 'string' },
+                data_source: { type: 'string' }
+              },
+              required: ['status', 'spf_audit', 'dmarc_audit', 'dkim_mx_audit', 'fix_priorities', 'data_source']
+            }
           }
         ]
       }
@@ -329,6 +360,12 @@ async function handleMcpRequest(request, env) {
           break;
         case 'architect_sending_infrastructure':
           result = architectInfrastructure(args);
+          break;
+        case 'audit_domain_live':
+          if (!args.domain || String(args.domain).trim() === '') {
+            return { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing required parameter: domain' } };
+          }
+          result = await auditDomainLive(args);
           break;
         default:
           return {
@@ -507,5 +544,107 @@ function architectInfrastructure(args) {
     esp_selection: 'ESP/SMTP SELECTION MATRIX: BY STREAM — COLD: the specialized sequencing tools (chosen for pacing controls, per-mailbox caps, unified suppression and bounce processing — NOT for "unlimited" promises) sitting on top of real Workspace/M365 mailboxes; MARKETING: the established ESP class with custom signing domain + custom return-path (the DMARC alignment pair), RFC 8058 one-click unsubscribe, webhook telemetry and a reputation-defending abuse desk; TRANSACTIONAL: the purpose-built API class (SES for cost at scale with more assembly required, Postmark/Resend class for turnkey speed). THE SHARED-VS-DEDICATED IP DECISION: shared pools win under ~25-50k/month (the pool smooths low-volume reputation and the ESP polices neighbors); dedicated wins above that threshold IF volume is steady (dedicated IPs decay on bursty calendars — the irregular high-volume sender is better served by a premium shared pool, which is the counterintuitive case); the migration between them is a warmup event (design_inbox_warmup_protocol, esp_migration). THE EVALUATION CHECKLIST beyond features: published sending policies actually enforced (loose policy = bad neighbors), deliverability documentation quality (a vendor who explains return-path alignment is a vendor who understands it), data portability (export paths for lists, suppression and templates), and pricing that does not punish list hygiene (per-subscriber pricing taxes you for keeping dead weight — an incentive misalignment worth noticing).',
     compliance_layer: 'THE COMPLIANCE LAYER (the legal floor and the deliverability ceiling are the same floor): CAN-SPAM (US): truthful headers and subjects, the physical postal address in every commercial mail, a working opt-out honored within 10 business days (honor it instantly — the 10 days is the ceiling, not the target), and no opt-out friction (login walls before unsubscribing are violations); GDPR/PECR (EU/UK recipients): lawful basis required — consent for B2C marketing (double opt-in is the evidentiary standard), legitimate interest available for relevant B2B outreach but it must be DOCUMENTED (the balancing test), targeted (role-relevant), and paired with easy objection; data rights honored (erasure requests flow into permanent suppression, not deletion-then-reimport); CASL (Canada): the strictest consent regime in the anglosphere — express or carefully-documented implied consent before sending; THE SUPPRESSION ARCHITECTURE: one global suppression list across every tool and stream, append-only, checked at send time — the person who opted out of one stream and was mailed by another is both a legal exposure and a guaranteed complaint; THE ETHICAL FLOOR ABOVE THE LEGAL ONE: permission-conscious outreach (tight targeting, honest value, instant respected exits, no purchased lists) is not just compliance — it is the only cold-email strategy that still works in 2026, because filters are trained on recipient sentiment and recipient sentiment is trained on how senders behave. The spray-and-pray era did not end because it became illegal; it ended because it stopped landing.',
     scaling_playbook: scalePlaybooks[scale] + (goal !== 'cold_outreach_infrastructure' ? ' GOAL-SPECIFIC BUILD: ' + goalContent[goal] : '')
+  };
+}
+
+async function auditDomainLive(args) {
+  const domain = String(args.domain).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  const selector = args.dkim_selector ? String(args.dkim_selector).trim() : null;
+
+  async function doh(name, type) {
+    try {
+      const resp = await fetch('https://dns.google/resolve?name=' + encodeURIComponent(name) + '&type=' + type, {
+        headers: { 'Accept': 'application/json', 'User-Agent': 'InboxForge-MCP/1.1' }
+      });
+      if (!resp.ok) return { error: 'HTTP ' + resp.status };
+      const j = await resp.json();
+      return { answers: (j.Answer || []).map(function(a) { return a.data.replace(/^"|"$/g, '').replace(/" "/g, ''); }) };
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  const lookups = await Promise.all([
+    doh(domain, 'TXT'),
+    doh('_dmarc.' + domain, 'TXT'),
+    doh(domain, 'MX'),
+    selector ? doh(selector + '._domainkey.' + domain, 'TXT') : Promise.resolve(null)
+  ]);
+  const txt = lookups[0], dmarc = lookups[1], mx = lookups[2], dkim = lookups[3];
+
+  if (txt.error && dmarc.error && mx.error) {
+    const note = 'Live DNS lookup temporarily unavailable (DNS-over-HTTPS unreachable: ' + txt.error + '). Retry in a few minutes; meanwhile the strategy tools (engineer_dns_authentication_stack) work offline.';
+    return { status: 'success', spf_audit: note, dmarc_audit: note, dkim_mx_audit: note, fix_priorities: note, data_source: 'Google Public DNS over HTTPS (query failed) \u2014 domain: ' + domain };
+  }
+
+  const fixes = [];
+
+  const spfRecords = (txt.answers || []).filter(function(r) { return /^v=spf1/i.test(r); });
+  let spfAudit;
+  if (spfRecords.length === 0) {
+    spfAudit = 'SPF: \u274c NO RECORD FOUND on ' + domain + '. Every receiver treats unauthenticated mail with suspicion, and Gmail/Yahoo bulk-sender rules effectively require it. This is the first fix: publish v=spf1 with ONLY the services that actually send for you, ending in ~all (softfail) during rollout, -all once verified.';
+    fixes.push('P1 \u2014 PUBLISH SPF: no v=spf1 record exists; nothing else matters until authentication exists');
+  } else if (spfRecords.length > 1) {
+    spfAudit = 'SPF: \u274c BROKEN \u2014 ' + spfRecords.length + ' v=spf1 records found. Multiple SPF records are a permanent error (RFC 7208): receivers treat this as PermError, which can be WORSE than no record. Merge them into exactly one record. Records found: ' + spfRecords.join(' || ');
+    fixes.push('P1 \u2014 MERGE SPF: multiple v=spf1 records = PermError at receivers; consolidate into one');
+  } else {
+    const spf = spfRecords[0];
+    const mechCount = (spf.match(/\b(include:|a[\s:]|mx[\s:]|ptr|exists:|redirect=)/gi) || []).length;
+    const qualifier = /-all\s*$/i.test(spf) ? 'strict (-all)' : (/~all\s*$/i.test(spf) ? 'softfail (~all)' : (/\?all\s*$/i.test(spf) ? 'neutral (?all) \u2014 weak' : (/\+all/i.test(spf) ? 'DANGEROUS (+all allows anyone)' : 'no all mechanism \u2014 incomplete')));
+    spfAudit = 'SPF: \u2705 record found on ' + domain + ': "' + spf.slice(0, 220) + '". Mechanism/lookup-risk count: ~' + mechCount + ' (the RFC hard limit is 10 DNS lookups \u2014 above ~7 includes, flattening or pruning is due). Qualifier: ' + qualifier + '.';
+    if (mechCount > 7) fixes.push('P2 \u2014 SPF LOOKUP RISK: ~' + mechCount + ' mechanisms; approaching the 10-lookup PermError cliff \u2014 prune dead services or flatten');
+    if (/\+all/i.test(spf)) fixes.push('P1 \u2014 SPF +all: the record authorizes THE ENTIRE INTERNET to send as you; change to ~all or -all immediately');
+    else if (/\?all\s*$/i.test(spf)) fixes.push('P3 \u2014 SPF ?all: neutral qualifier provides no protection signal; move to ~all then -all');
+  }
+
+  const dmarcRecords = (dmarc.answers || []).filter(function(r) { return /^v=DMARC1/i.test(r); });
+  let dmarcAudit;
+  if (dmarc.error) {
+    dmarcAudit = 'DMARC: lookup failed (' + dmarc.error + ') \u2014 retry shortly.';
+  } else if (dmarcRecords.length === 0) {
+    dmarcAudit = 'DMARC: \u274c NO RECORD at _dmarc.' + domain + '. Without DMARC: (1) you fail Gmail/Yahoo bulk-sender requirements, (2) anyone can spoof your exact From address, (3) you are blind \u2014 no aggregate reports showing who sends as you. Publish v=DMARC1; p=none; rua=mailto:reports@' + domain + ' TODAY (p=none breaks nothing; it just turns the lights on), then escalate to quarantine/reject after 2-4 weeks of clean reports.';
+    fixes.push('P1 \u2014 PUBLISH DMARC: start at p=none with rua reporting; zero risk, immediate visibility, required by Gmail/Yahoo bulk rules');
+  } else {
+    const d = dmarcRecords[0];
+    const pol = (d.match(/;\s*p=([a-z]+)/i) || [])[1] || 'none';
+    const hasRua = /rua=/i.test(d);
+    const pct = (d.match(/pct=(\d+)/i) || [])[1];
+    dmarcAudit = 'DMARC: \u2705 record found: "' + d.slice(0, 200) + '". Policy: p=' + pol + (pct ? ' at pct=' + pct : '') + '. Aggregate reporting (rua): ' + (hasRua ? 'ON' : '\u274c OFF \u2014 you are enforcing blind') + '. ' + (pol === 'none' ? 'p=none is the monitoring stage \u2014 correct for rollout, but it blocks NOTHING; plan the escalation to quarantine then reject once reports show all legitimate mail aligned.' : (pol === 'quarantine' ? 'p=quarantine is the intermediate stage \u2014 spoofed mail goes to spam; the finish line is p=reject.' : 'p=reject is the gold standard \u2014 spoofing is dead at compliant receivers.'));
+    if (!hasRua) fixes.push('P2 \u2014 DMARC rua MISSING: add rua=mailto: reporting \u2014 enforcement without reports is flying blind');
+    if (pol === 'none') fixes.push('P3 \u2014 DMARC ESCALATION: p=none monitors only; after 2-4 clean weeks move to p=quarantine (pct=25 ramp), then p=reject');
+    if (pct && Number(pct) < 100) fixes.push('P3 \u2014 DMARC pct=' + pct + ': partial coverage; raise to 100 once confident');
+  }
+
+  const mxList = mx.answers || [];
+  let dkimPart = '';
+  if (selector && dkim) {
+    const dkimRecs = (dkim.answers || []).filter(function(r) { return /v=DKIM1|k=rsa|p=/i.test(r); });
+    if (dkim.error) {
+      dkimPart = ' DKIM (' + selector + '): lookup failed (' + dkim.error + ').';
+    } else if (dkimRecs.length === 0) {
+      dkimPart = ' DKIM (' + selector + '._domainkey.' + domain + '): \u274c no record found \u2014 either the selector name is different (check your ESP dashboard) or DKIM is not configured; unsigned mail fails modern receiver expectations.';
+      fixes.push('P1 \u2014 DKIM MISSING at selector "' + selector + '": verify the selector name with your sender, or configure DKIM signing (2048-bit)');
+    } else {
+      const keyB64 = (dkimRecs[0].match(/p=([A-Za-z0-9+\/=]+)/) || [])[1] || '';
+      const strength = keyB64.length > 350 ? '2048-bit class (strong)' : (keyB64.length > 0 ? '1024-bit class (legacy \u2014 rotate to 2048)' : 'key unreadable');
+      dkimPart = ' DKIM (' + selector + '): \u2705 record found, key strength: ' + strength + '.';
+      if (keyB64.length > 0 && keyB64.length <= 350) fixes.push('P2 \u2014 DKIM KEY UPGRADE: selector "' + selector + '" appears 1024-bit; rotate to 2048-bit');
+    }
+  } else {
+    dkimPart = ' DKIM: no selector provided \u2014 pass dkim_selector (e.g. "google", "s1") to verify signing; the selector name is in your ESP/provider DNS setup page.';
+  }
+  const dkimMxAudit = 'MX: ' + (mxList.length > 0 ? '\u2705 ' + mxList.length + ' record(s): ' + mxList.slice(0, 4).join(', ') + ' \u2014 receiving is configured (replies and FBL mail can land, which warmup and reputation depend on).' : '\u274c NO MX RECORDS \u2014 the domain cannot receive mail: replies bounce, which is a spam signal in itself, and many receivers distrust send-only domains.') + dkimPart;
+  if (mxList.length === 0) fixes.push('P2 \u2014 MX MISSING: a sending domain that cannot receive replies looks like a spam cannon; configure receiving');
+
+  if (fixes.length === 0) fixes.push('CLEAN BASELINE: SPF, DMARC and MX all present and sane \u2014 next wins are DMARC escalation to reject (if not there), per-service DKIM selector hygiene, and quarterly record audits');
+  const fixPriorities = 'PRIORITIZED FIX LIST (computed from the live records, P1 = do today): ' + fixes.map(function(f, i) { return (i + 1) + '. ' + f; }).join('. ') + '. Re-run this audit after each change \u2014 DNS edits propagate in minutes to hours.';
+
+  return {
+    status: 'success',
+    spf_audit: spfAudit,
+    dmarc_audit: dmarcAudit,
+    dkim_mx_audit: dkimMxAudit,
+    fix_priorities: fixPriorities,
+    data_source: 'Google Public DNS over HTTPS (official, live) \u2014 queried in real time: TXT + _dmarc TXT + MX' + (selector ? ' + ' + selector + '._domainkey TXT' : '') + ' for ' + domain + '. Records reflect public DNS at the moment of this request.'
   };
 }

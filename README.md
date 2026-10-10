@@ -49,6 +49,10 @@ Then ask your agent things like:
 
 ---
 
+## 🔴 NEW in v1.1 — Live DNS Audit
+
+`audit_domain_live` queries **real DNS records in real time** (DNS-over-HTTPS): your actual SPF record and lookup-count risk, your DMARC policy level, MX records, and optional DKIM selector verification — with a prioritized fix list computed from what is actually published right now. Try it: pass your own domain.
+
 ## 💰 Pricing
 
 **Start free — 10 requests/day, no signup, no card.**
