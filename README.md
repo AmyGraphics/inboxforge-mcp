@@ -18,11 +18,11 @@
 
 | Tool | What it does |
 |------|--------------|
-| `autonomous_deliverability_doctor` | **Master 1-shot engine** — full diagnosis across the 5 deliverability layers (auth → reputation → engagement → content → infrastructure), situation-specific triage, ordered fix sequence & the free monitoring stack |
-| `engineer_dns_authentication_stack` | Complete SPF/DKIM/DMARC engineering: the 10-lookup limit, 2048-bit DKIM selector strategy, progressive DMARC rollout (none → quarantine → reject), BIMI/MTA-STS/TLS-RPT/PTR, with Google Workspace / Microsoft 365 / custom SMTP paths |
-| `design_inbox_warmup_protocol` | Week-by-week warmup ramps for new domains, dormant revivals, ESP migrations & volume scale-ups — with engagement engineering, volume math and failure-signal response ladders |
-| `eliminate_spam_triggers` | Kills content, technical and reputation triggers: link patterns, HTML soup, List-Unsubscribe compliance, spam traps, the 0.3% complaint wall — with before/after rewrites and B2B gateway vs consumer Gmail calibration |
-| `architect_sending_infrastructure` | Root-domain firewall, lookalike portfolios, mailbox fleet math, ESP selection matrix, CAN-SPAM/GDPR compliance layer & scaling playbooks from solo founder to high-volume ops |
+| `inbox.architect` | **Master 1-shot engine** — full diagnosis across the 5 deliverability layers (auth → reputation → engagement → content → infrastructure), situation-specific triage, ordered fix sequence & the free monitoring stack |
+| `inbox.dns_auth` | Complete SPF/DKIM/DMARC engineering: the 10-lookup limit, 2048-bit DKIM selector strategy, progressive DMARC rollout (none → quarantine → reject), BIMI/MTA-STS/TLS-RPT/PTR, with Google Workspace / Microsoft 365 / custom SMTP paths |
+| `inbox.warmup` | Week-by-week warmup ramps for new domains, dormant revivals, ESP migrations & volume scale-ups — with engagement engineering, volume math and failure-signal response ladders |
+| `inbox.spam_triggers` | Kills content, technical and reputation triggers: link patterns, HTML soup, List-Unsubscribe compliance, spam traps, the 0.3% complaint wall — with before/after rewrites and B2B gateway vs consumer Gmail calibration |
+| `inbox.sending_infra` | Root-domain firewall, lookalike portfolios, mailbox fleet math, ESP selection matrix, CAN-SPAM/GDPR compliance layer & scaling playbooks from solo founder to high-volume ops |
 
 ---
 
@@ -51,7 +51,7 @@ Then ask your agent things like:
 
 ## 🔴 NEW in v1.1 — Live DNS Audit
 
-`audit_domain_live` queries **real DNS records in real time** (DNS-over-HTTPS): your actual SPF record and lookup-count risk, your DMARC policy level, MX records, and optional DKIM selector verification — with a prioritized fix list computed from what is actually published right now. Try it: pass your own domain.
+`inbox.audit_domain_live` queries **real DNS records in real time** (DNS-over-HTTPS): your actual SPF record and lookup-count risk, your DMARC policy level, MX records, and optional DKIM selector verification — with a prioritized fix list computed from what is actually published right now. Try it: pass your own domain.
 
 ## 💰 Pricing
 
